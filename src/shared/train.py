@@ -49,6 +49,8 @@ def train_model(word2idx):
   scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
   
   best_loss = float('inf')
+  patience_counter = 0
+  early_stopping_patience = 10  # Stop if no improvement for 10 epochs
 
   for epoch in range(epochs):
     epoch_loss = 0
@@ -92,11 +94,19 @@ def train_model(word2idx):
     # Step the scheduler
     scheduler.step(avg_loss)
     
-    # Save best model
+    # Save best model and check early stopping
     if avg_loss < best_loss:
       best_loss = avg_loss
+      patience_counter = 0
       torch.save(model.state_dict(), SAVE_MODEL_PATH)
       print(f"✓ Best model saved (loss: {best_loss:.4f})")
+    else:
+      patience_counter += 1
+      print(f"No improvement. Patience: {patience_counter}/{early_stopping_patience}")
+      
+      if patience_counter >= early_stopping_patience:
+        print(f"\n⚠ Early stopping triggered! No improvement for {early_stopping_patience} epochs.")
+        break
   
   print(f"\nTraining complete! Best loss: {best_loss:.4f}")
   return model
