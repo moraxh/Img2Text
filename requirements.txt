@@ -1,20 +1,24 @@
 # PyTorch con soporte CUDA 11.8
-torch==2.2.1+cu118
-torchvision==0.17.1+cu118
-torchaudio==2.2.1+cu118
--f https://download.pytorch.org/whl/torch_stable.html
+torch
+torchvision
+torchaudio
 
-# Transformers para modelos de captioning
-transformers==4.35.2
+# MS-COCO API
+pycocotools
+
+# Métricas de evaluación
+torchmetrics
+
+# Procesamiento de lenguaje natural
+nltk
 
 # Procesamiento de imágenes
-Pillow==10.1.0
+pillow
+
+# Visualización
+matplotlib
 
 # Utilidades
-numpy==1.25.2
-
-
-kagglehub
-
-nltk
-numpy==1.25.2  
+numpy
+tqdm
+  

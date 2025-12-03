@@ -1,64 +1,67 @@
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
-import kagglehub
+from pycocotools.coco import COCO
 import os
 import torch
 
-path = kagglehub.dataset_download("adityajn105/flickr8k")
+# MS-COCO 2014 Dataset paths (update these paths as needed)
+COCO_ROOT = os.path.expanduser("~/.cache/coco")
+TRAIN_IMG_DIR = os.path.join(COCO_ROOT, "train2014")
+VAL_IMG_DIR = os.path.join(COCO_ROOT, "val2014")
+TRAIN_ANN_FILE = os.path.join(COCO_ROOT, "annotations/captions_train2014.json")
+VAL_ANN_FILE = os.path.join(COCO_ROOT, "annotations/captions_val2014.json")
 
-# Dataloader
-class Flickr8kDataset(Dataset):
-  def __init__(self, img_dir, captions_file, transform=None):
+# COCO Dataset
+class COCODataset(Dataset):
+  def __init__(self, img_dir, ann_file, transform=None):
     self.img_dir = img_dir
-    self.captions_file = captions_file
     self.transform = transform
-    self.image_paths = []
-    self.captions = []
-
-    with open(captions_file, 'r') as f:
-      lines = f.readlines()[1:]  # Skip header
-      for line in lines:
-        img_name, caption = line.strip().split(',', 1)  # CSV format, split only on first comma
-        self.image_paths.append(os.path.join(img_dir, img_name))
-        self.captions.append(caption.strip())
-
+    self.coco = COCO(ann_file)
+    self.ids = list(self.coco.anns.keys())
+    
   def __len__(self):
-    return len(self.captions)
+    return len(self.ids)
 
   def __getitem__(self, idx):
-    img_path = self.image_paths[idx]
-    caption = self.captions[idx]
+    ann_id = self.ids[idx]
+    caption = self.coco.anns[ann_id]['caption']
+    img_id = self.coco.anns[ann_id]['image_id']
+    img_info = self.coco.loadImgs(img_id)[0]
+    img_path = os.path.join(self.img_dir, img_info['file_name'])
+    
     image = Image.open(img_path).convert('RGB')
-
+    
     if self.transform:
       image = self.transform(image)
 
     return image, caption
 
-data_dir = os.path.join(path, 'Images')
-captions_file = os.path.join(path, 'captions.txt')
-dataset = Flickr8kDataset(img_dir=data_dir, captions_file=captions_file)
-data_loader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=2)
+# Create dataset instances (will be initialized with transforms later)
+train_dataset = None
+val_dataset = None
+
+def get_coco_datasets(train_transform=None, val_transform=None):
+  global train_dataset, val_dataset
+  train_dataset = COCODataset(TRAIN_IMG_DIR, TRAIN_ANN_FILE, transform=train_transform)
+  val_dataset = COCODataset(VAL_IMG_DIR, VAL_ANN_FILE, transform=val_transform)
+  return train_dataset, val_dataset
 
 # Dataset for pre-extracted features
 class PreExtractedFeaturesDataset(Dataset):
-  def __init__(self, features_file, captions_file):
-    self.features_dict = torch.load(features_file)
-    self.image_names = []
-    self.captions = []
-    
-    with open(captions_file, 'r') as f:
-      lines = f.readlines()[1:]  # Skip header
-      for line in lines:
-        img_name, caption = line.strip().split(',', 1)
-        self.image_names.append(img_name)
-        self.captions.append(caption.strip())
+  def __init__(self, features_dict, coco_dataset):
+    self.features_dict = features_dict
+    self.coco_dataset = coco_dataset
+    self.ids = coco_dataset.ids
   
   def __len__(self):
-    return len(self.captions)
+    return len(self.ids)
   
   def __getitem__(self, idx):
-    img_name = self.image_names[idx]
+    ann_id = self.ids[idx]
+    caption = self.coco_dataset.coco.anns[ann_id]['caption']
+    img_id = self.coco_dataset.coco.anns[ann_id]['image_id']
+    img_info = self.coco_dataset.coco.loadImgs(img_id)[0]
+    img_name = img_info['file_name']
+    
     features = self.features_dict[img_name]
-    caption = self.captions[idx]
     return features, caption

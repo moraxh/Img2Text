@@ -1,0 +1,302 @@
+\documentclass[conference]{IEEEtran}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\title{Aprendizaje Profundo: Proyecto - Image Captioning (Encoder-Decoder)}
+
+\author{\IEEEauthorblockN{M.I. Juan José Cárdenas Cornejo}
+\IEEEauthorblockA{\textit{División de Ingenierías}\\
+\textit{Universidad de Guanajuato}\\
+Salamanca, Gto., México\\
+jj.cardenasc@ugto.mx}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\textbf{Resumen}---Este proyecto trata sobre el entrenamiento y evaluación de una arquitectura híbrida del tipo \textit{Encoder-Decoder} para la tarea de \textit{Image Captioning}, que combinan redes neuronales convolucionales (CNN) preentrenadas para la extracción de características visuales y redes neuronales recurrentes (LSTM) para la generación de secuencias de texto. El documento enfatiza el manejo técnico de secuencias de longitud variable mediante \textit{Packed Sequences}, la implementación de un pipeline de datos multimodal (MS-COCO) y la validación de la capacidad de generalización del modelo mediante pruebas con imágenes no vistas.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Image Captioning, CNN, LSTM, Transfer Learning, Pack Padded Sequence, COCO Dataset, NLP, Teacher Forcing.
+\end{IEEEkeywords}
+
+\section{Introducción}
+
+\subsection{Contexto}
+
+La generación automática de descripciones de imágenes (\textit{Image Captioning}) es una intersección clave de la Visión por Computadora y el Procesamiento de Lenguaje Natural (NLP). A diferencia de la clasificación de imágenes tradicional, donde el objetivo es asignar una etiqueta única, esta tarea requiere producir oraciones simultáneos:
+
+\begin{enumerate}
+    \item \textbf{Comprensión Visual (Encoder):} Detectar objetos, atributos y sus relaciones espaciales, y comprimir esta información en un vector de características denso.
+    \item \textbf{Generación de Lenguaje (Decoder):} Traducir dicha representación visual en una secuencia de palabras $S = \{w_1, w_2, \ldots, w_T\}$ sintácticamente correcta y semánticamente fiel.
+\end{enumerate}
+
+Un reto fundamental en el entrenamiento de modelos de lenguaje es que las oraciones tienen longitudes variables (\textit{batches}) de manera eficiente en la GPU, se utiliza \textit{Padding} (relleno con ceros o con tokens especiales).
+
+Sin embargo, procesar estos ceros en una red recurrente (LSTM) es computacionalmente ineficiente y puede introducir ruido en el estado oculto. Para solucionar esto, en PyTorch se utiliza la técnica de \textbf{Packed Sequences} (p.ej., \texttt{pack\_padded\_sequence}). Esto permite que la red ignore los tokens de \textit{padding}, calculando gradientes y estados ocultos únicamente sobre los datos reales, lo que optimiza el rendimiento y la precisión del modelo.
+
+\section{Objetivos}
+
+\begin{itemize}
+    \item Implementar una \textbf{arquitectura Encoder-Decoder} que integre módulos de visión (CNN) y de lenguaje (LSTM).
+    
+    \item Comprender el preprocesamiento multimodal: carga de imágenes y tokenización de texto con vocabularios controlados.
+    
+    \item Manejar tensores empaquetados (\textit{PackedSequence}) para un entrenamiento eficiente de LSTMs.
+    
+    \item Evaluar el desempeño mediante métricas de \textit{Perplexity} y realizar pruebas de inferencia cualitativa en escenarios reales (imágenes externas).
+\end{itemize}
+
+\section{Metodología}
+
+\subsection{Datos y Preprocesamiento}
+
+Se utiliza el conjunto de datos \textbf{MS-COCO (2014)}. El pipeline de datos se divide en dos flujos:
+
+\subsubsection{Procesamiento de texto:}
+
+\begin{itemize}
+    \item Se construye un vocabulario mapeando palabras a índices enteros.
+    
+    \item Se filtran aquellas palabras con una frecuencia inferior a 4.
+    
+    \item Se añaden cuatro tokens especiales:
+    \begin{itemize}
+        \item \texttt{<pad>}: Relleno para igualar longitudes.
+        \item \texttt{<start>}: Indica el inicio de la oración.
+        \item \texttt{<end>}: Indica el final de la generación.
+        \item \texttt{<unk>}: Para palabras fuera del vocabulario.
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Procesamiento de imágenes:}
+
+Las imágenes sufren transformaciones específicas en la etapa:
+
+\begin{itemize}
+    \item \textbf{Entrenamiento:} Redimensionamiento, recorte aleatorio (\textit{Random Crop}) a 224 × 224 y volteo horizontal para aumentar la robustez.
+    
+    \item \textbf{Validación/Inferencia:} Recorte central (\textit{Center Crop}) a 224 × 224 para garantizar la determinismo.
+    
+    \item \textbf{Normalización:} Se estandarizan los canales RGB utilizando las medias y desviaciones típicas de ImageNet.
+\end{itemize}
+
+\subsection{Arquitectura del Modelo (Base)}
+
+El sistema sigue el enfoque ``Show and Tell'' simplificado:
+
+\subsubsection{Encoder (CNN):}
+
+Se emplea un modelo preentrenado (p. ej., ResNet o VGG) como \textit{backbone}. Se elimina la última capa de clasificación y se sustituye por una capa lineal (\texttt{Linear}) seguida de una \texttt{BatchNorm1d}.
+
+\begin{itemize}
+    \item \textbf{Función:} Proyectar las características visuales a la dimensión de \textit{embedding} de palabras (p. ej., 256).
+    
+    \item \textbf{Transfer Learning:} Inicialmente, los pesos de la CNN base se mantienen congelados (\textit{frozen}), entrenando solo la capa de adaptación.
+\end{itemize}
+
+\subsubsection{Decoder (LSTM):}
+
+\begin{itemize}
+    \item \textbf{Embedding:} Capa que transforma índices de palabras en vectores densos.
+    
+    \item \textbf{LSTM Core:} Recibe las características visuales (concatenadas como estado inicial) y la secuencia de embeddings. Tamaño oculto típico: 512.
+\end{itemize}
+
+\subsubsection{Protocolo de Entrenamiento}
+
+\begin{itemize}
+    \item \textbf{Optimizador:} Adam con Learning Rate inicial de 0.001.
+    
+    \item \textbf{Función de Pérdida:} \texttt{CrossEntropyLoss}, configurada para ignorar el índice del token \texttt{<pad>}.
+    
+    \item \textbf{Teacher Forcing:} Durante el entrenamiento, la entrada en el paso $t$ es la palabra real del \textit{ground truth} en el paso $t-1$, no la predicción del modelo.
+    
+    \item \textbf{Collate Function:} Se implementa una función personalizada en el \texttt{DataLoader} para ordenar los lotes por longitud (en orden descendente), requisito indispensable para usar \texttt{pack\_padded\_sequence}.
+\end{itemize}
+
+\subsection{Variantes (Actividad del Alumno)}
+
+Cada equipo debe implementar y analizar al menos dos variantes del modelo base. Ejemplos:
+
+\begin{itemize}
+    \item \textbf{Híper-parámetros:} Cambio del número de épocas, optimizador, batch size.
+    
+    \item \textbf{Fine-Tuning del Encoder:} Descongelar los pesos de la CNN tras ciertas épocas para adaptar el extractor visual al dominio de COCO.
+    
+    \item \textbf{Cambios Arquitectónicos:} Usar GRU en lugar de LSTM o aumentar la profundidad (número de capas).
+    
+    \item \textbf{Inferencia:} Implementar \textit{Beam Search} durante la generación de texto para mejorar la cobertura global frente a la búsqueda \textit{Greedy}.
+\end{itemize}
+
+\section{Resultados y Validación Externa}
+
+\section{Resultados}
+
+\subsection{Desempeño del Modelo Base}
+
+Se debe reportar la evolución de la Pérdida y la \textbf{Perplejidad} ($PP = e^{\text{Loss}}$) tanto en el conjunto de entrenamiento como en el de validación. La Tabla I resume el costo computacional y las métricas finales del modelo sin modificaciones.
+
+\begin{table}[h]
+\centering
+\caption{Base en dataset: Desempeño y Costo}
+\begin{tabular}{|c|c|c|c|c|c|}
+\hline
+\textbf{Modelo} & \textbf{Pérdida (M)} & \textbf{Épocas (n)} & \textbf{Train Loss} & \textbf{Val Loss} & \textbf{Val PP} \\
+\hline
+CNN+LSTM & X.X & X & X.XX & X.XX & X.XXX \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Impacto de las Variantes}
+
+Se debe cuantificar el impacto de cada modificación propuesta sobre el modelo base. Utilice métricas como BLEU (si es posible) o la mejora en Perplejidad (PP) y en Loss. La Tabla II debe reflejar el cambio específico realizado y su efecto.
+
+\begin{table}[h]
+\centering
+\caption{Variantes: Cambio clave y efecto en métricas}
+\begin{tabular}{|c|c|c|c|c|c|}
+\hline
+\textbf{Modelo} & \textbf{Variante} & \textbf{Cambio Clave} & \textbf{$\Delta$ Loss} & \textbf{$\Delta$ PP} & \textbf{Obs.} \\
+\hline
+& & Descongelar & & & Mejora \\
+Base & & Encoder & N/A & N/A & detalle \\
+& +Beam & Beam Search & - & - & $k=5$ \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Validación con Imágenes Externas (Obligatorio)}
+
+Para verificar que el modelo no ha memorizado simplemente el conjunto de datos, se requiere una prueba de generalización:
+
+\begin{enumerate}
+    \item Crear una carpeta \texttt{imagenes\_validacion}.
+    
+    \item Agregar al menos \textbf{10 imágenes propias} o de internet (no pertenecientes a COCO). Deben incluir variedad: paisajes, personas, interiores, objetos.
+    
+    \item Ejecutar el script de inferencia con el Modelo Base y las Variantes entrenadas.
+    
+    \item Generar una figura comparativa o una tabla que muestre: Imagen Original, Caption Modelo Base, Caption Mejor Variante.
+\end{enumerate}
+
+\section{Análisis}
+
+Discuta si las hipótesis planteadas sobre las variantes se confirman. Analice cualitativamente los resultados de validación externa:
+
+\begin{itemize}
+    \item ¿El modelo detecta los objetos principales en imágenes nunca vistas?
+    \item ¿Existen alucinaciones (objetos mencionados que no están presentes)?
+    \item ¿La gramática generada es correcta?
+\end{itemize}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{figura1.png}
+\caption{Ejemplos de Image Caption resultantes}
+\end{figure}
+
+\section{Entregables}
+
+\begin{itemize}
+    \item \textbf{Informe PDF:} Siguiendo el formato IMRA, incluyendo la introducción, la metodología, gráficas de entrenamiento y la sección visual de validación externa.
+    
+    \item \textbf{Código Fuente:} scripts organizados, modulares y reproducibles.
+    
+    \item \textbf{Carpeta de Validación:} Contiene las 10 imágenes utilizadas para la prueba externa.
+    
+    \item \textbf{Checkpoints:} Archivo \texttt{.ckpt} del mejor modelo.
+\end{itemize}
+
+\section{Rúbrica (100 pts)}
+
+\begin{itemize}
+    \item \textbf{Correctitud Técnica (30):} Implementación funcional de Encoder-Decoder y uso adecuado de \texttt{pack\_padded\_sequence}.
+    
+    \item \textbf{Validación Externa (20):} Prueba realizada con al menos 10 imágenes externas; análisis interpretativo.
+    
+    \item \textbf{Diseño Experimental (20):} Implementación y justificación de variantes.
+    
+    \item \textbf{Análisis Crítico (20):} Interpretación de la perplejidad y de los errores cualitativos.
+    
+    \item \textbf{Documentación (10):} Claridad y formato.
+\end{itemize}
+
+\section*{Apéndice A: La Métrica BLEU}
+
+\subsection{Concepto y Definición}
+
+La métrica \textbf{BLEU} (Bilingual Evaluation Understudy) es un algoritmo diseñado para evaluar la \textbf{calidad del texto} generado automáticamente comparándolo con una o más referencias humanas.
+
+A diferencia de métricas humanas subjetivas, BLEU calcula la coincidencia de \textit{n-gramas} (secuencias de $n$ palabras consecutivas) entre la oración candidata (generada por el modelo) y las oraciones de referencia. El resultado es un valor entre 0 y 1 (o entre 0 y 100), donde 1 indica una coincidencia perfecta con la referencia.
+
+\subsection{Formulación Matemática}
+
+BLEU se define como la media geométrica de las precisiones de los n-gramas, ponderada y penalizada por la longitud de la oración generada para evitar que el modelo genere oraciones muy cortas pero precisas.
+
+La ecuación general es:
+
+\begin{equation}
+BLEU = BP \cdot \exp\left(\sum_{n=1}^{N} w_n \log p_n\right)
+\end{equation}
+
+Donde:
+
+\begin{itemize}
+    \item $p_n$: Es la precisión de n-gramas modificada (cuántos n-gramas generados aparecen realmente en la referencia).
+    \item $w_n$: Es el peso asignado a cada tamaño de n-grama (usualmente, uniforme, $1/N$).
+    \item $N$: El orden máximo de los n-gramas (típicamente 4 para BLEU-4).
+\end{itemize}
+
+\subsection{Brevity Penalty (Penalización por Brevedad).}
+
+\subsubsection{Brevity Penalty (BP):}
+
+Para penalizar oraciones demasiado cortas, se utiliza el factor $BP$:
+
+\begin{equation}
+BP = \begin{cases}
+1 & \text{si } c > r \\
+e^{(1-r/c)} & \text{si } c \leq r
+\end{cases}
+\end{equation}
+
+Donde $c$ es la longitud de la predicción y $r$ la longitud de la referencia más cercana.
+
+\subsection{Implementación en PyTorch}
+
+Para un cálculo eficiente en PyTorch, se recomienda utilizar la librería oficial \texttt{torchmetrics}, que permite calcular tensores en GPU. A continuación se presenta el código para implementar y calcular BLEU-4:
+
+\begin{lstlisting}[language=Python, basicstyle=\small]
+# Import
+from torchmetrics.text import BLEUScore
+
+def calcular_bleu(candidatas, referencias):
+    # Inicializar metrica
+    bleu = BLEUScore(n_gram=4, smooth=True)
+    
+    # Calcular Score
+    score = bleu(candidatas, referencias)
+    
+    return score.item()
+
+# Ejemplo de uso
+candidatas = [
+    ['el gato esta en la cama'], # Ref 1
+    ['un pequeno gato en una cama'] # Ref 2
+]
+preds = ['un gato en la cama']
+
+# Score
+score = calcular_bleu(preds, [refs])
+# print(f"BLEU-4 Score: {score:.4f}")
+\end{lstlisting}
+
+\end{document}
